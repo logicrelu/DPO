@@ -9,9 +9,9 @@
 
 ## 环境准备
 ```bash
-pip install torch transformers datasets trl accelerate
+pip install torch transformers datasets trl accelerate peft
 ```
-> 如果显存有限，可使用 CPU 或更小的基础模型（脚本默认 `sshleifer/tiny-gpt2`）。
+> 如果显存有限，可使用 CPU、LoRA 适配器，或更小的基础模型（脚本默认 `sshleifer/tiny-gpt2`）。
 
 ## 如何运行
 ```bash
@@ -27,6 +27,20 @@ python train_dpo.py \
 ```
 - 训练完成后，检查 `models/dpo-checkpoint/` 获取模型与分词器。
 - 想要继续训练或换模型，只需更换命令行参数。
+
+### 使用 Qwen 2.5 7B + LoRA 的示例
+```bash
+python train_dpo.py \
+  --model_name Qwen/Qwen2.5-7B-Instruct \
+  --use_lora \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --batch_size 1 \
+  --max_length 1024 \
+  --output_dir models/qwen2_5_7b_lora \
+  --trust_remote_code
+```
+- `--use_lora` 会在指定的 `target_modules` 上注入低秩适配器，便于在 7B 级别模型上省显存；`r`、`alpha`、`dropout` 等超参可按需调整。
+- 如果从私有或自定义实现的模型仓库加载，需要 `--trust_remote_code`。
 
 ## 数据说明
 偏好数据必须包含以下字段：
