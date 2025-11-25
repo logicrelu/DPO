@@ -13,6 +13,7 @@ from typing import Dict
 
 import torch
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -34,6 +35,12 @@ class DPOConfig:
     learning_rate: float = 5e-5
     beta: float = 0.1
     seed: int = 42
+    use_lora: bool = False
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    lora_target_modules: str | None = None
+    trust_remote_code: bool = False
 
 
 def parse_args() -> DPOConfig:
@@ -93,6 +100,43 @@ def parse_args() -> DPOConfig:
         default=42,
         help="随机种子，保证可复现。",
     )
+    parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="是否使用 LoRA 适配器（推荐在大模型上节省显存，例如 Qwen 2.5 7B）。",
+    )
+    parser.add_argument(
+        "--lora_r",
+        type=int,
+        default=8,
+        help="LoRA 秩（r），值越大表示容量越大。",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=16,
+        help="LoRA 缩放因子 alpha。",
+    )
+    parser.add_argument(
+        "--lora_dropout",
+        type=float,
+        default=0.05,
+        help="LoRA dropout，用于缓解过拟合。",
+    )
+    parser.add_argument(
+        "--lora_target_modules",
+        type=str,
+        default=None,
+        help=(
+            "逗号分隔的 LoRA 注入模块名称列表。"
+            " 若留空则默认使用 q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj。"
+        ),
+    )
+    parser.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        help="为需要自定义模型代码的仓库打开 trust_remote_code（例如部分 Qwen 版本）。",
+    )
     args = parser.parse_args()
     return DPOConfig(
         model_name=args.model_name,
@@ -104,6 +148,12 @@ def parse_args() -> DPOConfig:
         learning_rate=args.learning_rate,
         beta=args.beta,
         seed=args.seed,
+        use_lora=args.use_lora,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        lora_target_modules=args.lora_target_modules,
+        trust_remote_code=args.trust_remote_code,
     )
 
 
@@ -134,13 +184,41 @@ def main() -> None:
     dataset = prepare_dataset(config.data_path)
 
     # 3) 加载基础模型与分词器。
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_name, trust_remote_code=config.trust_remote_code
+    )
     # 一些小模型没有 pad_token，DPOTrainer 需要设置 pad_token 才能正常工作。
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    model = AutoModelForCausalLM.from_pretrained(config.model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        config.model_name, trust_remote_code=config.trust_remote_code
+    )
+
+    # 可选：为大模型（如 Qwen 2.5 7B）启用 LoRA，以减少显存占用。
+    if config.use_lora:
+        target_modules = (
+            [m.strip() for m in config.lora_target_modules.split(",")]
+            if config.lora_target_modules
+            else [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]
+        )
+        lora_config = LoraConfig(
+            r=config.lora_r,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
+            target_modules=target_modules,
+            task_type="CAUSAL_LM",
+        )
+        model = get_peft_model(model, lora_config)
 
     # 4) 配置训练超参。
     training_args = TrainingArguments(
